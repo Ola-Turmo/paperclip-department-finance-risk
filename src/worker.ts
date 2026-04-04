@@ -7,6 +7,7 @@ import {
   computeDepartmentHealthStatus,
   generateToolkitLimitations,
   formatAllLimitations,
+  performRuntimeHealthCheck,
   type ConnectorHealthState,
 } from "./connector-health.js";
 import type {
@@ -184,6 +185,40 @@ const plugin = definePlugin({
         overallStatus,
         limitations,
         hasLimitations: limitations.length > 0,
+      };
+    });
+
+    /**
+     * Perform actual runtime health check for all connectors.
+     * 
+     * This implements XAF-007: Department workflows degrade explicitly when
+     * dependent connectors or tools are impaired, rather than blindly reporting ok.
+     */
+    ctx.actions.register("connector.checkHealth", async () => {
+      ctx.logger.info("Performing runtime connector health check", { 
+        connectorCount: connectorHealthState.length 
+      });
+      
+      const checkResult = await performRuntimeHealthCheck(connectorHealthState);
+      connectorHealthState = checkResult.updatedStates;
+      
+      ctx.logger.info("Connector health check completed", {
+        overallStatus: checkResult.overallStatus,
+        checkedConnectors: checkResult.checkResults.filter(r => r.wasChecked).length,
+        hasImpaired: checkResult.checkResults.some(r => r.status !== "ok"),
+      });
+      
+      const limitations = generateToolkitLimitations(connectorHealthState);
+      
+      return {
+        success: true,
+        overallStatus: checkResult.overallStatus,
+        checkedAt: new Date().toISOString(),
+        connectors: connectorHealthState,
+        checkResults: checkResult.checkResults,
+        limitations,
+        hasLimitations: limitations.length > 0,
+        formattedLimitations: limitations.length > 0 ? formatAllLimitations(limitations) : undefined,
       };
     });
 

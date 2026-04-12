@@ -10,6 +10,27 @@ import {
   performRuntimeHealthCheck,
   type ConnectorHealthState,
 } from "./connector-health.js";
+import {
+  ControlsMonitorService,
+  getControlsMonitorService,
+} from "./controls/monitor.js";
+import {
+  ApprovalIntelligence,
+  calculateApproverLoad,
+  calculateRiskScore,
+  predictApprovalTime,
+  suggestOptimalDelegation,
+} from "./approval/approval-intelligence.js";
+import {
+  StatisticalAnomalyEngine,
+  detectZScoreAnomalies,
+  detectIQROutliers,
+  detectSeasonalAnomaly,
+  calculateVolatilityAdjustedThreshold,
+  detectMovingAverageCrossover,
+  simpleMovingAverageForecast,
+  exponentialSmoothingForecast,
+} from "./variance/statistical-anomaly.js";
 import type {
   CreateApprovalRouteParams,
   CreateApprovalRequestParams,
@@ -31,11 +52,18 @@ import type {
   ConnectorHealthSummary,
   SetConnectorHealthParams,
   GetConnectorHealthParams,
+  RecordControlExecutionParams,
+  RecordControlExceptionParams,
+  ResolveControlExceptionParams,
+  GetControlHealthParams,
+  GetControlExceptionsParams,
+  GetControlEffectivenessParams,
 } from "./types.js";
 
 // Initialize services
 const approvalService = new ApprovalService();
 const varianceAnomalyService = new VarianceAnomalyService();
+const controlsMonitorService = getControlsMonitorService();
 
 // Connector health state (XAF-007)
 let connectorHealthState: ConnectorHealthState[] = createInitialConnectorHealthState();
@@ -578,6 +606,101 @@ const plugin = definePlugin({
      */
     ctx.actions.register("anomaly.getSummary", async () => {
       const summary = varianceAnomalyService.generateAnomalySummary();
+      return { summary };
+    });
+
+    // ============================================
+    // Continuous Controls Monitoring Actions (VAL-DEPT-FR-001)
+    // ============================================
+
+    /**
+     * Record a control execution (success or failure)
+     * VAL-DEPT-FR-001: Tracks control health and effectiveness
+     */
+    ctx.actions.register("control.recordExecution", async (params) => {
+      const p = params as unknown as RecordControlExecutionParams;
+      ctx.logger.info("Recording control execution", { controlId: p.controlId, success: p.success });
+      const health = controlsMonitorService.recordExecution(p);
+      return { health };
+    });
+
+    /**
+     * Record a control exception with owner, due date, and disposition tracking
+     * VAL-DEPT-FR-001: Ensures 100% of control exceptions are logged
+     */
+    ctx.actions.register("control.recordException", async (params) => {
+      const p = params as unknown as RecordControlExceptionParams;
+      ctx.logger.info("Recording control exception", { controlId: p.controlId, type: p.type });
+      const exception = controlsMonitorService.recordException(p);
+      return { exception };
+    });
+
+    /**
+     * Resolve a control exception with disposition
+     * VAL-DEPT-FR-001
+     */
+    ctx.actions.register("control.resolveException", async (params) => {
+      const p = params as unknown as ResolveControlExceptionParams;
+      ctx.logger.info("Resolving control exception", { exceptionId: p.exceptionId });
+      const exception = controlsMonitorService.resolveException(p);
+      return { exception: exception ?? null };
+    });
+
+    /**
+     * Get control health for a specific control
+     * VAL-DEPT-FR-001
+     */
+    ctx.actions.register("control.getHealth", async (params) => {
+      const p = params as unknown as GetControlHealthParams;
+      const health = controlsMonitorService.getControlHealth(p.controlId);
+      return { health: health ?? null };
+    });
+
+    /**
+     * Get all controls health
+     * VAL-DEPT-FR-001
+     */
+    ctx.actions.register("control.getAllHealth", async () => {
+      const controls = controlsMonitorService.getAllControlsHealth();
+      return { controls };
+    });
+
+    /**
+     * Get control exceptions with optional filtering
+     * VAL-DEPT-FR-001
+     */
+    ctx.actions.register("control.getExceptions", async (params) => {
+      const p = params as unknown as GetControlExceptionsParams;
+      const exceptions = controlsMonitorService.getControlExceptions(p);
+      return { exceptions };
+    });
+
+    /**
+     * Get effectiveness metrics for a control
+     * VAL-DEPT-FR-001
+     */
+    ctx.actions.register("control.getEffectiveness", async (params) => {
+      const p = params as unknown as GetControlEffectivenessParams;
+      const metrics = controlsMonitorService.getEffectivenessMetrics(p.controlId, p.periodDays);
+      return { metrics: metrics ?? null };
+    });
+
+    /**
+     * Detect failure patterns for a control
+     * VAL-DEPT-FR-001: Identifies recurring control failures
+     */
+    ctx.actions.register("control.detectPatterns", async (params) => {
+      const p = params as unknown as { controlId: string; minOccurrences?: number };
+      const pattern = controlsMonitorService.detectFailurePatterns(p.controlId, p.minOccurrences);
+      return { pattern: pattern ?? null };
+    });
+
+    /**
+     * Get overall controls health summary
+     * VAL-DEPT-FR-001
+     */
+    ctx.actions.register("control.getSummary", async () => {
+      const summary = controlsMonitorService.getHealthSummary();
       return { summary };
     });
   },

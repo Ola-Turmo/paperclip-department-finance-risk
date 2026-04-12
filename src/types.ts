@@ -515,3 +515,341 @@ export interface SetConnectorHealthParams {
 export interface GetConnectorHealthParams {
   toolkitId?: string;
 }
+
+// ============================================
+// Approval Intelligence Types (VAL-DEPT-FR-001)
+// ============================================
+
+export interface ApprovalIntelligenceState {
+  pendingRequests: TrackedApprovalRequest[];
+  historicalApprovals: HistoricalApproval[];
+  approverCapacity: Record<string, ApproverCapacity>;
+}
+
+export interface TrackedApprovalRequest {
+  requestId: string;
+  category: ApprovalCategory;
+  priority: ApprovalPriority;
+  amount?: number;
+  currency?: string;
+  approverRoleKeys: string[];
+  slaDeadlineHours: number;
+  requestedAt: string;
+  riskScore?: number;
+}
+
+export interface HistoricalApproval {
+  requestId: string;
+  approverRoleKey: string;
+  decision: "approved" | "rejected" | "exception" | "delegated";
+  decidedAt: string;
+  durationHours: number;
+}
+
+export interface ApproverCapacity {
+  pendingCount: number;
+  avgApprovalTimeHours: number;
+  utilizationPercent: number;
+  recentApprovals?: number;
+}
+
+export interface ApprovalRecommendation {
+  requestId: string;
+  suggestedApprover: string;
+  confidence: number;
+  reasoning: string;
+  riskContext: ApprovalRiskContext;
+  priorityFactors: string[];
+}
+
+export interface ApprovalRiskContext {
+  riskScore: number;
+  isHighValue: boolean;
+  controlBoundaryLevel: ControlBoundaryLevel;
+  requiresSecondApproval: boolean;
+  segregationRisk: boolean;
+  exceptionCount: number;
+  urgencyLevel: ApprovalPriority;
+}
+
+export interface DelegationSuggestion {
+  fromRoleKey: string;
+  suggestedDelegate: string;
+  confidence: number;
+  reasoning: string;
+  urgency: ApprovalPriority;
+  estimatedTimeSavedHours?: number;
+}
+
+export interface BottleneckPrediction {
+  approverRoleKey: string;
+  currentLoad: number;
+  predictedDelayHours: number;
+  slaAtRisk: boolean;
+  pendingRequestCount: number;
+  reason: string;
+}
+
+export interface PipelineAnalytics {
+  totalPending: number;
+  avgTimeInQueueHours: number;
+  approvalRate: number;
+  topBottlenecks: Array<{
+    approverRoleKey: string;
+    loadPercent: number;
+    pendingCount: number;
+  }>;
+  categoryBreakdown: Record<ApprovalCategory, number>;
+  priorityBreakdown: Record<ApprovalPriority, number>;
+}
+
+// ============================================
+// Statistical Anomaly Detection Types (VAL-DEPT-FR-002)
+// Phase 1: Anomaly Engine - Time-series anomaly detection with pure statistics
+// ============================================
+
+export type StatisticalMethod = "zscore" | "iqr" | "ensemble";
+export type TimeSeriesPoint = { timestamp: string; value: number };
+
+export interface StatisticalAnomalyDetectionParams {
+  method: StatisticalMethod;
+  threshold?: number;
+  multiplier?: number;
+  windowSize?: number;
+  period?: number;
+  minDataPoints?: number;
+}
+
+export interface StatisticalAnomalyResult {
+  id: string;
+  detectedAt: string;
+  method: StatisticalMethod;
+  anomalies: StatisticalAnomalyMarker[];
+  statistics: StatisticalStatistics;
+  explanation: string;
+  insufficientData: boolean;
+  timeSeriesData?: TimeSeriesPoint[];
+  seasonalProfile?: Record<number, { mean: number; stdDev: number; count: number }>;
+}
+
+export interface StatisticalAnomalyMarker {
+  index: number;
+  value: number;
+  timestamp?: string;
+  severityScore: number;
+  zScore?: number;
+  deviationFromExpected?: number;
+  methods: string[];
+  votes?: number;
+}
+
+export interface StatisticalStatistics {
+  mean: number;
+  stdDev: number;
+  variance: number;
+  min: number;
+  max: number;
+  count: number;
+  q1?: number;
+  q3?: number;
+  iqr?: number;
+  volatilityRatio?: number;
+}
+
+export interface VolatilityThreshold {
+  mean: number;
+  upper: number;
+  lower: number;
+  stdDev: number;
+  volatilityRatio: number;
+}
+
+export interface RollingStats {
+  values: (number | null)[];
+  windowSize: number;
+  timestamps?: string[];
+}
+
+export interface CrossoverSignal {
+  index: number;
+  type: "bullish" | "bearish";
+  shortMA: number;
+  longMA: number;
+}
+
+export interface ForecastResult {
+  forecast: number[];
+  periods: number;
+  method: string;
+  confidence?: number;
+}
+
+// Action Parameters - Statistical Anomaly Detection
+
+export interface DetectStatisticalAnomalyParams {
+  title: string;
+  description: string;
+  dataPoints: Array<{ timestamp: string; value: number }>;
+  method: StatisticalMethod;
+  threshold?: number;
+  multiplier?: number;
+  windowSize?: number;
+  period?: number;
+  seasonalityEnabled?: boolean;
+  volatilityAdjusted?: boolean;
+  ownerRoleKey?: string;
+}
+
+export interface GetStatisticalAnomalyParams {
+  anomalyId: string;
+}
+
+export interface AnalyzeTimeSeriesParams {
+  dataPoints: Array<{ timestamp: string; value: number }>;
+  windowSize?: number;
+  detectCrossovers?: boolean;
+  shortWindow?: number;
+  longWindow?: number;
+}
+
+// ============================================
+// Continuous Controls Monitoring Types (VAL-DEPT-FR-001)
+// ============================================
+
+export type ControlHealthStatus = "healthy" | "degraded" | "failing" | "unknown";
+
+export interface ControlHealth {
+  controlId: string;
+  controlName?: string;
+  description?: string;
+  status: ControlHealthStatus;
+  lastChecked: string;
+  consecutiveFailures: number;
+  totalExecutions: number;
+  successfulExecutions: number;
+  failedExecutions: number;
+  successRate: number;
+  threshold: {
+    minSuccessRate: number;
+    maxConsecutiveFailures: number;
+  };
+}
+
+export interface ControlException {
+  id: string;
+  controlId: string;
+  type: "evidence-gap" | "segregation-violation" | "sla-breach" | "policy-conflict" | "scope-exceeded" | "approval-violation" | "other";
+  description: string;
+  severity: "critical" | "high" | "medium" | "low";
+  reportedAt: string;
+  reportedByRoleKey?: string;
+  ownerRoleKey?: string;
+  dueDate?: string;
+  slaDays?: number;
+  isBreached: boolean;
+  disposition: "pending" | "accepted" | "waived" | "escalated" | "rejected";
+  resolution?: string;
+  resolvedAt?: string;
+  resolvedByRoleKey?: string;
+  completionNotes?: string[];
+  linkedToRequestId?: string;
+}
+
+export interface ControlExecution {
+  id: string;
+  controlId: string;
+  executedAt: string;
+  success: boolean;
+  failureReason?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ControlEffectivenessMetrics {
+  controlId: string;
+  periodStart: string;
+  periodEnd: string;
+  totalExecutions: number;
+  successfulExecutions: number;
+  failedExecutions: number;
+  exceptionCount: number;
+  effectivenessRate: number;
+  exceptionRate: number;
+}
+
+export interface ControlHealthSummary {
+  generatedAt: string;
+  totalControls: number;
+  healthyCount: number;
+  degradedCount: number;
+  failingCount: number;
+  unknownCount: number;
+  overallHealthStatus: ControlHealthStatus;
+  pendingExceptions: number;
+  breachedExceptions: number;
+  resolvedExceptions: number;
+  averageEffectivenessRate: number;
+}
+
+export interface ControlFailurePattern {
+  controlId: string;
+  failures: Array<{
+    date: string;
+    type: string;
+    exceptionId?: string;
+  }>;
+  isRecurring: boolean;
+  recurrencePattern?: string;
+  failureCount: number;
+  suggestedAction?: string;
+}
+
+export interface ControlsMonitoringState {
+  controls: Record<string, ControlHealth>;
+  exceptions: Record<string, ControlException>;
+  executions: Record<string, ControlExecution>;
+  lastUpdated: string;
+}
+
+// Action Parameters - Controls Monitoring
+
+export interface RecordControlExecutionParams {
+  controlId: string;
+  success: boolean;
+  failureReason?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RecordControlExceptionParams {
+  controlId: string;
+  type: ControlException["type"];
+  description: string;
+  severity: ControlException["severity"];
+  reportedByRoleKey?: string;
+  ownerRoleKey?: string;
+  dueDate?: string;
+  slaDays?: number;
+  linkedToRequestId?: string;
+}
+
+export interface ResolveControlExceptionParams {
+  exceptionId: string;
+  resolution: string;
+  disposition: ControlException["disposition"];
+  resolvedByRoleKey: string;
+  completionNotes?: string[];
+}
+
+export interface GetControlHealthParams {
+  controlId: string;
+}
+
+export interface GetControlExceptionsParams {
+  controlId?: string;
+  disposition?: ControlException["disposition"];
+  severity?: ControlException["severity"];
+}
+
+export interface GetControlEffectivenessParams {
+  controlId: string;
+  periodDays?: number;
+}

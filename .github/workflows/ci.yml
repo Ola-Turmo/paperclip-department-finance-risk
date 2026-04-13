@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: npm install --no-fund --no-audit
 
+      - name: Install Python ML dependencies
+        run: pip install pyod dowhy pandas scikit-learn --quiet
+
       - name: TypeScript check
         run: npm run plugin:typecheck
 

@@ -16,6 +16,50 @@ Built as part of the UOS split workspace on top of [Paperclip](https://github.co
 
 - Split repo with package code as the source of truth and a Paperclip plugin scaffold available for worker, manifest, UI, and validation surfaces when the repo needs runtime or operator-facing behavior.
 
+## Phase 1+2 Features
+
+### ML Anomaly Detection (PyOD Ensemble)
+- `src/variance/ml-anomaly-detector.ts` — Isolation forest principle + time-series decomposition for detecting spikes, drops, and trend deviations in financial data.
+- `src/variance/pyod-ensemble-detector.ts` — TypeScript adapter calling Python PyOD wrapper via child_process for ensemble anomaly scoring with Z-score fallback.
+
+### DoWhy Causal Root Cause
+- `src/finance/causal-root-cause.ts` — TypeScript interface to DoWhy causal inference. Estimates each factor's causal contribution to anomalous outcomes using Python DoWhy wrapper with correlation-based fallback.
+
+### LLM Anomaly Narrative Generator
+- `src/finance/llm-narrative-generator.ts` — Converts detected anomalies into CFO-ready plain-English explanations with executive summary, business impact, and recommended actions.
+
+### Approval Router (ML-powered)
+- `src/approval/approval-router.ts` — Cost/risk-aware approval routing with segregation of duties, approver scoring based on history and workload, and risk flag detection.
+
+### Control Exception Logger (100% Audit Trail)
+- `src/controls/control-exception-logger.ts` — Ensures 100% exception coverage with full audit trail. Tracks open/resolved status, severity, owner, and generates compliance reports.
+
+### Finance ERP Stubs
+- `src/finance-erp-stub.ts` — Stub connectors for QuickBooks, Xero, and NetSuite ERP systems.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    UOS Finance & Risk                    │
+├─────────────────────────────────────────────────────────┤
+│  Variance Analysis     │  Approval Flow  │  Controls   │
+│  ─────────────────────┼──────────────────┼─────────────│
+│  • MLAnomalyDetector  │  • ApprovalRouter│  • Exception│
+│  • PyOD Ensemble      │  • ApprovalSvc   │    Logger   │
+│  • VarianceExplainer  │  • Segregation   │  • Monitor   │
+│  • ForecastPredictor  │    Matrix        │             │
+├───────────────────────┴──────────────────┴─────────────┤
+│  Causal Inference    │  LLM Narrative   │  ERP Stubs   │
+│  • DoWhy Wrapper     │  • Anomaly Narr.  │  • QuickBooks│
+│  • Correlation F/B   │  • CFO Explan.    │  • Xero      │
+│                      │                   │  • NetSuite  │
+├─────────────────────────────────────────────────────────┤
+│                    Python ML Layer                        │
+│        PyOD · DoWhy · pandas · scikit-learn              │
+└─────────────────────────────────────────────────────────┘
+```
+
 ## Highest-Value Workflows
 
 - Explaining forecast movement and variance drivers.

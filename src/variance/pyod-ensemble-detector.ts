@@ -34,8 +34,14 @@ export async function detectEnsembleAnomalies(
   threshold = 0.65
 ): Promise<EnsembleAnomalyPoint[]> {
   const pythonScript = join(__dirname, "..", "python", "pyod-wrapper.py");
-  
+  const TIMEOUT_MS = 4000;
+
   return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      try { proc.kill(); } catch { /* ignore */ }
+      resolve(fallbackDetect(values, threshold));
+    }, TIMEOUT_MS);
+
     const proc = spawn("python3", [pythonScript, JSON.stringify({ values: values.map(v => v.value) })], {
       timeout: 30000,
     });
@@ -47,6 +53,7 @@ export async function detectEnsembleAnomalies(
     proc.stderr.on("data", (d) => { stderr += d.toString(); });
 
     proc.on("close", (code) => {
+      clearTimeout(timer);
       if (code === 0 && stdout.trim()) {
         try {
           const result: PyODResult = JSON.parse(stdout.trim());
@@ -72,7 +79,10 @@ export async function detectEnsembleAnomalies(
       }
     });
 
-    proc.on("error", () => resolve(fallbackDetect(values, threshold)));
+    proc.on("error", () => {
+      clearTimeout(timer);
+      resolve(fallbackDetect(values, threshold));
+    });
   });
 }
 

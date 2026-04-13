@@ -35,8 +35,16 @@ export class CausalRootCauseAnalyzer {
   }): Promise<CausalRootCauseResult> {
     const { factors, outcomeVar, commonCauses = ["seasonality_idx", "economic_idx"] } = params;
     const pythonScript = join(__dirname, "..", "python", "dowhy-wrapper.py");
+    const TIMEOUT_MS = 4000;
 
     return new Promise((resolve) => {
+      let killed = false;
+      const timer = setTimeout(() => {
+        killed = true;
+        try { proc.kill(); } catch { /* ignore */ }
+        resolve(this.fallbackNarrative(params, "timeout"));
+      }, TIMEOUT_MS);
+
       const proc = spawn("python3", [
         pythonScript,
         JSON.stringify({ factors, outcome_var: outcomeVar, common_causes: commonCauses }),
@@ -49,6 +57,8 @@ export class CausalRootCauseAnalyzer {
       proc.stderr.on("data", (d) => { stderr += d.toString(); });
 
       proc.on("close", (code) => {
+        if (killed) return;
+        clearTimeout(timer);
         if (code === 0 && stdout.trim()) {
           try {
             const result = JSON.parse(stdout.trim());
@@ -75,7 +85,11 @@ export class CausalRootCauseAnalyzer {
         }
       });
 
-      proc.on("error", () => resolve(this.fallbackNarrative(params, "process error")));
+      proc.on("error", () => {
+        if (killed) return;
+        clearTimeout(timer);
+        resolve(this.fallbackNarrative(params, "process error"));
+      });
     });
   }
 

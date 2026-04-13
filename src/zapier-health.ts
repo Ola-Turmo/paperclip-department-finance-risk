@@ -66,7 +66,7 @@ function setCached(toolkitId: string, result: ZapierHealthResult): void {
   // Evict if cache is too large (max 50 entries)
   if (healthCache.size >= 50) {
     // Remove oldest 10
-    const oldest = [...healthCache.entries()]
+    const oldest = Array.from(healthCache.entries())
       .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
       .slice(0, 10);
     oldest.forEach(([k]) => healthCache.delete(k));

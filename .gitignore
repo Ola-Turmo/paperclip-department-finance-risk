@@ -3,3 +3,7 @@ dist/
 coverage/
 out/
 *.tsbuildinfo
+__pycache__/
+*.pyc
+*.pyo
+python/__pycache__/

@@ -66,6 +66,12 @@ export class CausalRootCauseAnalyzer {
               resolve(this.fallbackNarrative(params, result.error));
               return;
             }
+            // dowhy returned "dowhy_backdoor_linear" method but with empty causal effects,
+            // meaning it fell back to sklearn internally due to insufficient data
+            if (result.method === "dowhy_backdoor_linear" && Object.keys(result.causal_effects ?? {}).length === 0) {
+              resolve(this.fallbackNarrative(params, "dowhy_insufficient_data"));
+              return;
+            }
             const topCause = Object.entries(result.causal_effects ?? {})
               .sort((a, b) => Math.abs(b[1] as number) - Math.abs(a[1] as number))[0]?.[0] ?? "unknown";
             resolve({

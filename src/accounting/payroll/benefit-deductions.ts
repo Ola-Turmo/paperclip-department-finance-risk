@@ -1,50 +1,82 @@
 /**
- * Benefit Deductions — Health, retirement, FSA, HSA, and other deductions
+ * Benefit Deductions — configurable limits per jurisdiction, not hardcoded IRS.
  */
 
-export enum DeductionType { HEALTH = 'health', DENTAL = 'dental', VISION = 'vision', LIFE = 'life', DISABILITY = 'disability', HSA = 'hsa', FSA = 'fsa', RETIREMENT_401K = '401k', RETIREMENT_403B = '403b', OTHER = 'other' }
-export enum DeductionFrequency { PER_PAYCHECK = 'per_paycheck', ANNUAL = 'annual' }
-
-export interface DeductionElection {
-  deductionType: DeductionType; description: string;
+export interface DeductionPlan {
+  id: string; name: string;
+  deductionType: string;  // 'health', 'hsa', 'fsa', '401k', 'pension', etc.
   employeeAmount: number; employerAmount: number;
-  frequency: DeductionFrequency; preTax: boolean; annualAmount?: number;
+  annualLimit?: number;
+  preTax: boolean;
+  frequency: 'per_paycheck' | 'annual';
+  jurisdictionId: string;
 }
 
-export interface DeductionResult { type: DeductionType; description: string; employeeDeduction: number; employerContribution: number; preTax: boolean; }
+export interface DeductionElection extends DeductionPlan {}
+
+export interface DeductionResult {
+  planId: string; type: string; description: string;
+  employeeDeduction: number; employerContribution: number;
+  preTax: boolean; remainingAllowance: number;
+}
+
+export interface BenefitDeductionConfig {
+  annualLimits: Record<string, Record<number, number>>;  // e.g. { hsa: { 2024: 4150 } }
+  plans: DeductionPlan[];
+}
 
 export class BenefitDeductionService {
-  // 2024 annual IRS limits
-  private readonly HSA_INDIVIDUAL_LIMIT = 4150;
-  private readonly HSA_FAMILY_LIMIT = 8300;
-  private readonly FSA_LIMIT = 3200;
-  private readonly RETIREMENT_LIMIT = 23000;
-  private readonly CATCHUP_LIMIT = 7750;
+  private config: BenefitDeductionConfig;
 
-  async calculateDeductions(elections: DeductionElection[], grossPay: number, payFrequency: string): Promise<DeductionResult[]> {
-    const results: DeductionResult[] = [];
+  constructor(config?: BenefitDeductionConfig) {
+    this.config = config ?? {
+      annualLimits: {
+        hsa: { 2024: 4150, 2025: 4300 },
+        fsa: { 2024: 3200 },
+        '401k': { 2024: 23000, 2025: 23500 },
+        pension: { 2024: 7000 },
+      },
+      plans: [],
+    };
+  }
+
+  updateConfig(config: BenefitDeductionConfig): void {
+    this.config = config;
+  }
+
+  getAnnualLimit(deductionType: string, year: number): number {
+    return this.config.annualLimits[deductionType]?.[year] ?? Infinity;
+  }
+
+  async calculateDeductions(
+    elections: DeductionElection[], grossPay: number,
+    payFrequency: string, year: number
+  ): Promise<DeductionResult[]> {
     const perPeriodsPerYear = payFrequency === 'weekly' ? 52 : payFrequency === 'biweekly' ? 26 : payFrequency === 'semimonthly' ? 24 : 12;
+    const results: DeductionResult[] = [];
 
     for (const election of elections) {
-      let empAmount = election.employeeAmount;
-      if (election.frequency === DeductionFrequency.ANNUAL && election.annualAmount) {
-        empAmount = election.annualAmount / perPeriodsPerYear;
-      }
-      // Cap HSA
-      if (election.deductionType === DeductionType.HSA && empAmount > this.HSA_INDIVIDUAL_LIMIT / perPeriodsPerYear) {
-        empAmount = this.HSA_INDIVIDUAL_LIMIT / perPeriodsPerYear;
-      }
-      results.push({ type: election.deductionType, description: election.description, employeeDeduction: empAmount, employerContribution: election.employerAmount, preTax: election.preTax });
+      const annualLimit = this.getAnnualLimit(election.deductionType, year);
+      let empAmount = election.frequency === 'annual' && election.annualLimit
+        ? election.annualLimit / perPeriodsPerYear
+        : election.employeeAmount;
+      empAmount = Math.min(empAmount, annualLimit / perPeriodsPerYear);
+      const remaining = annualLimit - empAmount * perPeriodsPerYear;
+      results.push({
+        planId: election.id, type: election.deductionType, description: election.name,
+        employeeDeduction: empAmount, employerContribution: election.employerAmount,
+        preTax: election.preTax, remainingAllowance: Math.max(0, remaining),
+      });
     }
     return results;
   }
 
-  async calculateEmployerBenefits(elections: DeductionElection[]): Promise<{ totalPerPaycheck: number; totalAnnual: number }> {
-    let totalPerPaycheck = 0, totalAnnual = 0;
-    for (const e of elections) {
-      totalPerPaycheck += e.employerAmount;
-      totalAnnual += e.employerAmount * 26; // biweekly
-    }
-    return { totalPerPaycheck, totalAnnual };
+  getAvailablePlans(jurisdictionId?: string): DeductionPlan[] {
+    if (!jurisdictionId) return this.config.plans;
+    return this.config.plans.filter(p => p.jurisdictionId === jurisdictionId);
+  }
+
+  addPlan(plan: DeductionPlan): void {
+    this.config.plans.push(plan);
   }
 }

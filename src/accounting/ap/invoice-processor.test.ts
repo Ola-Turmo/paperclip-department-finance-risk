@@ -1,5 +1,5 @@
 /**
- * AP Invoice Processor — Tests
+ * Invoice Processor — Tests
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
@@ -8,18 +8,30 @@ import { BillService, BillStatus, MatchStatus } from "./bill.js";
 import { MatchingEngine } from "./matching-engine.js";
 import { InvoiceProcessor } from "./invoice-processor.js";
 import { ExtractedInvoiceData } from "./bill.js";
+import { InMemoryRepository } from "../core/interfaces.js";
+import { CompanyConfigService } from "../core/company-config.js";
 
 describe("InvoiceProcessor", () => {
   let vendorService: VendorService;
   let billService: BillService;
   let matchingEngine: MatchingEngine;
   let processor: InvoiceProcessor;
+  let companyConfig: CompanyConfigService;
 
-  beforeEach(() => {
-    vendorService = new VendorService();
-    billService = new BillService();
+  beforeEach(async () => {
+    const vendorRepo = new InMemoryRepository<any>();
+    const billRepo = new InMemoryRepository<any>();
+    companyConfig = new CompanyConfigService();
+    await companyConfig.register({
+      id: 'test-co', name: 'Test Co', country: { countryCode: 'US', countryName: 'United States', currencyCode: 'USD', currencyDecimals: 2, dateFormat: 'MM/DD/YYYY', fiscalYearStart: 1, taxAuthority: 'IRS' },
+      jurisdictions: [{ id: 'US-FEDERAL', countryCode: 'US', level: 'federal', name: 'US Federal', taxRates: [{ type: 'corporate_income', rate: 0.21, description: 'Fed rate' }], filingFrequencies: [{ taxType: 'corporate_income', frequency: 'annually' }], effectiveFrom: new Date('2024-01-01') }],
+      accountingPolicy: { id: 'test-policy', companyId: 'test-co', functionalCurrency: 'USD', presentationCurrency: 'USD', fiscalYearStartMonth: 1, useFiscalYear: true, amountDecimalPlaces: 2, defaultTaxRate: 0.08, salesTaxInclusive: false, vendorNumberPrefix: 'VEN-', customerNumberPrefix: 'CUS-', invoiceNumberFormat: 'INV-{YYYY}-{NNN}', journalNumberFormat: 'JE-{YYYY}-{NNN}', assetNumberPrefix: 'FA-', payrollFrequency: 'biweekly', payrollWeekStart: 1, chartOfAccountsId: 'test-coa' },
+      intercompanyEnabled: false, consolidationRequired: false,
+    });
+    vendorService = new VendorService(vendorRepo as any, companyConfig);
+    billService = new BillService(billRepo as any);
     matchingEngine = new MatchingEngine();
-    processor = new InvoiceProcessor(vendorService, billService, matchingEngine);
+    processor = new InvoiceProcessor(vendorService, billService, matchingEngine, { companyId: 'test-co', autoApproveThreshold: 5000 });
   });
 
   it("should create a vendor and bill from extracted invoice data", async () => {
@@ -34,13 +46,13 @@ describe("InvoiceProcessor", () => {
 
     const result = await processor.processInvoice(extracted);
 
-    expect(result.status).toBe("pending_review");
+    expect(result.status).toBe(BillStatus.RECEIVED);
     expect(result.vendorId).toBeDefined();
     expect(result.billId).toBeDefined();
     expect(result.vendorName).toBe("Acme Supplies");
   });
 
-  it("should auto-approve small bills under $5000", async () => {
+  it("should auto-approve small bills under threshold", async () => {
     const extracted: ExtractedInvoiceData = {
       vendorName: "Small Vendor",
       invoiceNumber: "INV-SMALL",
@@ -52,17 +64,19 @@ describe("InvoiceProcessor", () => {
 
     const result = await processor.processInvoice(extracted);
 
-    expect(result.status).toBe("approved");
+    expect(result.status).toBe(BillStatus.APPROVED);
+    expect(result.autoApproved).toBe(true);
   });
 
   it("should find existing vendor by name", async () => {
     await vendorService.create({
-      name: "Existing Corp", status: VendorStatus.ACTIVE, companyId: "default",
+      name: "Existing Corp", status: VendorStatus.ACTIVE, companyId: "test-co",
       taxIdType: TaxIdType.EIN, taxId: "12-3456789",
       address: { street: "123 Main St", city: "NYC", state: "NY", zip: "10001", country: "US" },
       contact: { name: "John Doe", email: "john@existing.com", phone: "555-0100" },
       paymentTerms: { type: "net", days: 30 },
       1099: { type: Vendor1099Type.NONE, required: false, threshold: 0, ytdAmount: 0, w9OnFile: false },
+      bankAccounts: [],
     });
 
     const extracted: ExtractedInvoiceData = {
@@ -75,9 +89,8 @@ describe("InvoiceProcessor", () => {
     };
 
     const result = await processor.processInvoice(extracted);
-    const bills = await billService.list({});
-    expect(bills.length).toBe(1);
     expect(result.vendorName).toBe("Existing Corp");
+    expect(result.notes.some((n: string) => n.includes('Matched existing vendor'))).toBe(true);
   });
 
   it("should match bills without PO as no_po status", async () => {
@@ -92,8 +105,8 @@ describe("InvoiceProcessor", () => {
 
     const result = await processor.processInvoice(extracted);
 
-    expect(result.status).toBe("approved"); // small bill auto-approved
+    expect(result.status).toBe(BillStatus.APPROVED); // small bill auto-approved
     expect(result.matchResult).toBeDefined();
-    expect(result.matchResult.status).toBe("no_po");
+    expect(result.matchResult!.status).toBe(MatchStatus.NO_PO);
   });
 });

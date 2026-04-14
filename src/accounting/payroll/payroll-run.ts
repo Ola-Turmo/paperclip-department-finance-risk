@@ -1,111 +1,113 @@
 /**
- * Payroll Run — Full payroll processing from hours to net pay
+ * Payroll Run — configurable per company payroll frequency and jurisdiction.
  */
 
-import { EmployeeMasterService } from './employee-master.js';
 import { TaxWithholdingService } from './tax-withholding.js';
 import { BenefitDeductionService, DeductionElection } from './benefit-deductions.js';
+import { PayrollJournalEntryService } from './payroll-journal-entries.js';
 
-export enum PayrollRunStatus { DRAFT = 'draft', APPROVED = 'approved', PROCESSED = 'processed', PAID = 'paid' }
+export enum PayrollStatus { DRAFT = 'draft', APPROVED = 'approved', PROCESSED = 'processed', CANCELLED = 'cancelled' }
 
 export interface PayrollEntry {
   employeeId: string; employeeName: string;
-  hoursWorked?: number; grossPay: number;
+  hoursWorked?: number; hourlyRate?: number; salary?: number;
+  grossPay: number;
   federalWithholding: number; socialSecurity: number; medicare: number;
   stateWithholding: number; localWithholding: number;
-  totalDeductions: number; netPay: number;
-  payPeriodStart: Date; payPeriodEnd: Date;
+  totalWithholding: number; netPay: number;
+  benefitDeductions: { planId: string; type: string; description: string; employeeDeduction: number; employerContribution: number; preTax: boolean; }[];
+  employerTaxExpense: number;
 }
-export interface PayrollRun {
-  id: string; companyId: string; payPeriodStart: Date; payPeriodEnd: Date;
-  payDate: Date; status: PayrollRunStatus;
-  entries: PayrollEntry[]; totalGross: number; totalNet: number; totalDeductions: number;
-  approvedBy?: string; approvedAt?: Date;
-  createdAt: Date; updatedAt: Date;
+
+export interface PayrollRunData {
+  companyId: string; payPeriodStart: Date; payPeriodEnd: Date; payDate: Date;
+  entries: PayrollEntry[];
+  totalGross: number; totalNet: number; totalWithholding: number; totalEmployerTax: number;
+  status: PayrollStatus;
 }
 
 export class PayrollRunService {
   constructor(
-    private employees: EmployeeMasterService,
-    private withholding: TaxWithholdingService,
-    private benefits: BenefitDeductionService,
+    private withholdingService: TaxWithholdingService,
+    private benefitService: BenefitDeductionService,
+    private journalEntryService: PayrollJournalEntryService,
   ) {}
-  private runs = new Map<string, PayrollRun>();
-  private idCounter = 0;
-  private nextId(): string { return `prr_${Date.now()}_${++this.idCounter}`; }
 
-  async calculateGross(employee: any, hoursWorked?: number): Promise<number> {
-    if (employee.payType === 'salary') return employee.payRate / 26; // biweekly
-    if (employee.payType === 'hourly' && hoursWorked) return employee.payRate * hoursWorked;
-    return 0;
-  }
-
-  async createPayrollRun(params: {
-    companyId: string; payPeriodStart: Date; payPeriodEnd: Date; payDate: Date;
-    employeeEntries: { employeeId: string; hoursWorked?: number; deductions: DeductionElection[]; ytdWages: number; }[];
-  }): Promise<PayrollRun> {
+  async calculatePayroll(params: {
+    companyId: string;
+    employees: {
+      id: string; name: string; grossPay: number; ytdWages: number;
+      federalJurisdictionId: string; filingStatus: string;
+      federalAllowances: number; federalAdditionalWithholding: number;
+      stateJurisdictionId?: string; stateAllowances?: number;
+      benefitElections?: DeductionElection[];
+    }[];
+    payPeriodStart: Date; payPeriodEnd: Date; payDate: Date;
+  }): Promise<PayrollRunData> {
     const entries: PayrollEntry[] = [];
-    let totalGross = 0, totalNet = 0, totalDeductions = 0;
+    const year = params.payPeriodStart.getFullYear();
 
-    for (const entryParams of params.employeeEntries) {
-      const emp = await this.employees.getById(entryParams.employeeId);
-      if (!emp || emp.status !== 'active') continue;
-
-      const grossPay = await this.calculateGross(emp, entryParams.hoursWorked);
-      const withholding = this.withholding.calculateWithholding({
-        grossPay, ytdWages: entryParams.ytdWages,
-        filingStatus: emp.taxElection.federalFilingStatus,
-        federalAllowances: emp.taxElection.federalAllowances,
-        federalAdditionalWithholding: emp.taxElection.federalAdditionalWithholding,
-        state: emp.address.state, stateAllowances: emp.taxElection.stateAllowances,
-        stateFilingStatus: emp.taxElection.stateFilingStatus,
+    for (const emp of params.employees) {
+      const withholding = await this.withholdingService.calculateWithholding({
+        grossPay: emp.grossPay, ytdWages: emp.ytdWages,
+        federalJurisdictionId: emp.federalJurisdictionId,
+        filingStatus: emp.filingStatus,
+        federalAllowances: emp.federalAllowances,
+        federalAdditionalWithholding: emp.federalAdditionalWithholding,
+        stateJurisdictionId: emp.stateJurisdictionId,
+        stateAllowances: emp.stateAllowances,
       });
-      const deductions = await this.benefits.calculateDeductions(entryParams.deductions, grossPay, emp.payFrequency);
-      const totalDed = withholding.totalWithholding + deductions.reduce((s, d) => s + d.employeeDeduction, 0);
-      const netPay = grossPay - totalDed;
+
+      const deductions = emp.benefitElections
+        ? await this.benefitService.calculateDeductions(emp.benefitElections, emp.grossPay, 'biweekly', year)
+        : [];
+
+      const totalDeductions = deductions.reduce((s, d) => s + d.employeeDeduction, 0);
+      const taxableGross = emp.grossPay - deductions.filter(d => d.preTax).reduce((s, d) => s + d.employeeDeduction, 0);
+
+      const netPay = Math.max(0, emp.grossPay - withholding.totalWithholding - totalDeductions);
+      const employerTax = withholding.socialSecurity + withholding.medicare;
 
       entries.push({
-        employeeId: emp.id, employeeName: `${emp.firstName} ${emp.lastName}`,
-        hoursWorked: entryParams.hoursWorked, grossPay,
+        employeeId: emp.id, employeeName: emp.name,
+        grossPay: emp.grossPay,
         federalWithholding: withholding.federalWithholding,
         socialSecurity: withholding.socialSecurity,
         medicare: withholding.medicare,
         stateWithholding: withholding.stateWithholding,
-        localWithholding: 0, totalDeductions: totalDed, netPay,
-        payPeriodStart: params.payPeriodStart, payPeriodEnd: params.payPeriodEnd,
+        localWithholding: 0,
+        totalWithholding: withholding.totalWithholding,
+        netPay,
+        benefitDeductions: deductions,
+        employerTaxExpense: employerTax,
       });
-      totalGross += grossPay; totalNet += netPay; totalDeductions += totalDed;
     }
 
-    const run: PayrollRun = {
-      id: this.nextId(), companyId: params.companyId,
-      payPeriodStart: params.payPeriodStart, payPeriodEnd: params.payPeriodEnd,
-      payDate: params.payDate,      status: PayrollRunStatus.DRAFT as PayrollRunStatus,
-      entries, totalGross, totalNet, totalDeductions,
-      createdAt: new Date(), updatedAt: new Date(),
+    return {
+      companyId: params.companyId,
+      payPeriodStart: params.payPeriodStart,
+      payPeriodEnd: params.payPeriodEnd,
+      payDate: params.payDate,
+      entries,
+      totalGross: entries.reduce((s, e) => s + e.grossPay, 0),
+      totalNet: entries.reduce((s, e) => s + e.netPay, 0),
+      totalWithholding: entries.reduce((s, e) => s + e.totalWithholding, 0),
+      totalEmployerTax: entries.reduce((s, e) => s + e.employerTaxExpense, 0),
+      status: PayrollStatus.DRAFT,
     };
-    this.runs.set(run.id, run);
-    return run;
   }
 
-  async approve(runId: string, approverId: string): Promise<PayrollRun> {
-    const r = this.runs.get(runId);
-    if (!r) throw new Error(`Payroll run ${runId} not found`);
-    r.status = PayrollRunStatus.APPROVED as PayrollRunStatus; r.approvedBy = approverId; r.approvedAt = new Date(); r.updatedAt = new Date();
-    return r;
-  }
-
-  async process(runId: string): Promise<PayrollRun> {
-    const r = this.runs.get(runId);
-    if (!r) throw new Error(`Payroll run ${runId} not found`);
-    r.status = PayrollRunStatus.PROCESSED as PayrollRunStatus; r.updatedAt = new Date();
-    return r;
-  }
-
-  async getById(id: string): Promise<PayrollRun | null> { return this.runs.get(id) || null; }
-  async list(filters?: { status?: PayrollRunStatus; }): Promise<PayrollRun[]> {
-    let runs = Array.from(this.runs.values());
-    if (filters?.status) runs = runs.filter(r => r.status === filters.status);
-    return runs.sort((a, b) => b.payDate.getTime() - a.payDate.getTime());
+  async generateJournalEntries(run: PayrollRunData): Promise<{ description: string; accountCode: string; debit: number; credit: number; }[]> {
+    return this.journalEntryService.generateEntries({
+      companyId: run.companyId, chartOfAccountsId: '',
+      payPeriodStart: run.payPeriodStart,
+      entries: run.entries.map(e => ({
+        employeeId: e.employeeId, employeeName: e.employeeName,
+        grossPay: e.grossPay,
+        federalWithholding: e.federalWithholding,
+        socialSecurity: e.socialSecurity, medicare: e.medicare,
+        stateWithholding: e.stateWithholding, netPay: e.netPay,
+      })),
+    });
   }
 }

@@ -1,6 +1,9 @@
 /**
- * Income Tax Provision — Federal and state tax estimation
+ * Income Tax Provision — Uses CompanyConfig for federal/state rates.
+ * No hardcoded state rates — loaded from jurisdiction configuration.
  */
+
+import { CompanyConfigService } from '../core/company-config.js';
 
 export interface TaxProvisionEstimate {
   year: number; preTaxIncome: number;
@@ -10,21 +13,31 @@ export interface TaxProvisionEstimate {
   deferredTaxAssets: number; deferredTaxLiabilities: number;
 }
 
-export interface DeferredTaxItem { accountCode: string; description: string; temporaryDifference: number; taxRate: number; deferredTaxAmount: number; }
-
+export interface DeferredTaxItem { description: string; temporaryDifference: number; taxRate: number; deferredTaxAmount: number; }
 export interface TaxJournalEntry { description: string; accountCode: string; debit: number; credit: number; }
 
 export class IncomeTaxProvisionService {
-  private readonly FEDERAL_RATE = 0.21; // flat corporate rate
-  private readonly STATE_RATES: Record<string, number> = {
-    CA: 0.0884, NY: 0.0725, TX: 0.0, FL: 0.055, WA: 0.0,
-    IL: 0.095, OH: 0.0, MA: 0.08, PA: 0.0675, GA: 0.055,
-  };
+  constructor(private companyConfig: CompanyConfigService) {}
 
-  async estimateProvision(params: { preTaxIncome: number; state: string; year: number; deferredItems?: DeferredTaxItem[]; }): Promise<TaxProvisionEstimate> {
-    const federalTax = Math.max(0, params.preTaxIncome * this.FEDERAL_RATE);
-    const stateRate = this.STATE_RATES[params.state] ?? 0.05;
+  /** Estimate provision — reads federal + state rates from CompanyConfig */
+  async estimateProvision(params: {
+    companyId: string; preTaxIncome: number; year: number;
+    federalJurisdictionId: string; stateJurisdictionId?: string;
+    deferredItems?: DeferredTaxItem[];
+  }): Promise<TaxProvisionEstimate> {
+    // Get federal rate from CompanyConfig
+    const fedJ = await this.companyConfig.getJurisdiction(params.companyId, params.federalJurisdictionId);
+    const federalRate = fedJ?.taxRates.find(t => t.type === 'corporate_income')?.rate ?? 0.21;
+    const federalTax = Math.max(0, params.preTaxIncome * federalRate);
+
+    // Get state rate from CompanyConfig (or fall back to 0)
+    let stateRate = 0;
+    if (params.stateJurisdictionId) {
+      const stateJ = await this.companyConfig.getJurisdiction(params.companyId, params.stateJurisdictionId);
+      stateRate = stateJ?.taxRates.find(t => t.type === 'corporate_income')?.rate ?? 0;
+    }
     const stateTax = Math.max(0, params.preTaxIncome * stateRate);
+
     const totalTax = federalTax + stateTax;
     const effectiveTaxRate = params.preTaxIncome > 0 ? totalTax / params.preTaxIncome : 0;
 
@@ -36,25 +49,22 @@ export class IncomeTaxProvisionService {
 
     return {
       year: params.year, preTaxIncome: params.preTaxIncome,
-      federalTaxRate: this.FEDERAL_RATE, federalTax,
+      federalTaxRate: federalRate, federalTax,
       stateTaxRate: stateRate, stateTax,
       totalTax, effectiveTaxRate, netIncome: params.preTaxIncome - totalTax,
       deferredTaxAssets: dta, deferredTaxLiabilities: dtl,
     };
   }
 
-  generateJournalEntries(estimate: TaxProvisionEstimate): TaxJournalEntry[] {
+  /** Generate journal entries — configurable account codes from company policy */
+  generateJournalEntries(estimate: TaxProvisionEstimate, opts?: {
+    incomeTaxExpenseAccount?: string; federalPayableAccount?: string; statePayableAccount?: string;
+  }): TaxJournalEntry[] {
     return [
-      { description: 'Federal income tax provision', accountCode: '8990', debit: estimate.federalTax, credit: 0 },
-      { description: 'State income tax provision', accountCode: '8991', debit: estimate.stateTax, credit: 0 },
-      { description: 'Federal income tax payable', accountCode: '2310', debit: 0, credit: estimate.federalTax },
-      { description: 'State income tax payable', accountCode: '2311', debit: 0, credit: estimate.stateTax },
+      { description: 'Federal income tax provision', accountCode: opts?.incomeTaxExpenseAccount ?? '8991', debit: estimate.federalTax, credit: 0 },
+      { description: 'State income tax provision', accountCode: opts?.incomeTaxExpenseAccount ?? '8991', debit: estimate.stateTax, credit: 0 },
+      { description: 'Federal income tax payable', accountCode: opts?.federalPayableAccount ?? '2310', debit: 0, credit: estimate.federalTax },
+      { description: 'State income tax payable', accountCode: opts?.statePayableAccount ?? '2311', debit: 0, credit: estimate.stateTax },
     ];
-  }
-
-  async calculateEffectiveTaxRate(historical: { preTaxIncome: number; totalTax: number; }[]): Promise<number> {
-    const totalPreTax = historical.reduce((s, p) => s + p.preTaxIncome, 0);
-    const totalTax = historical.reduce((s, p) => s + p.totalTax, 0);
-    return totalPreTax > 0 ? totalTax / totalPreTax : 0;
   }
 }

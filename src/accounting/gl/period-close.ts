@@ -15,7 +15,7 @@ export interface Period {
   closedAt?: Date;
 }
 
-export interface TrialBalanceLine {
+export interface GLTrialBalanceLine {
   accountId: string;
   accountCode: string;
   accountName: string;
@@ -23,11 +23,11 @@ export interface TrialBalanceLine {
   creditBalance: number;
 }
 
-export interface TrialBalance {
+export interface GLTrialBalance {
   periodId: string;
   periodName: string;
   asOfDate: Date;
-  lines: TrialBalanceLine[];
+  lines: GLTrialBalanceLine[];
   totalDebits: number;
   totalCredits: number;
   isBalanced: boolean;
@@ -78,14 +78,14 @@ export class PeriodCloseService {
     );
   }
 
-  generateTrialBalance(periodId: string): TrialBalance {
+  generateTrialBalance(periodId: string): GLTrialBalance {
     const period = this.periods.get(periodId);
     if (!period) {
       throw new Error(`Period ${periodId} does not exist`);
     }
 
     const accounts = this.chartOfAccounts.getAccountsByCompany(period.companyId);
-    const lines: TrialBalanceLine[] = [];
+    const lines: GLTrialBalanceLine[] = [];
     let totalDebits = 0;
     let totalCredits = 0;
 

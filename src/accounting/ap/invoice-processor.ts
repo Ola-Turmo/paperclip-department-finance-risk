@@ -1,26 +1,22 @@
 /**
- * Invoice Processor - Orchestrates the complete invoice processing workflow
- * Coordinates vendor lookup, bill creation, matching, and approval routing
+ * Invoice Processor — orchestrates vendor lookup, bill creation, matching, approval.
+ * Uses Repository<T> for storage, configurable auto-approval threshold.
  */
 
-import { VendorService, VendorStatus, TaxIdType, Vendor1099Type } from './vendor-master.js';
-import { BillService, ExtractedInvoiceData, MatchStatus } from './bill.js';
-import { MatchingEngine } from './matching-engine.js';
-
-export interface InvoiceProcessorResult {
-  billId: string;
-  vendorId: string;
-  vendorName: string;
-  status: 'created' | 'matched' | 'approved' | 'pending_review';
-  matchResult?: any;
-  approvalId?: string;
-  errors?: string[];
-}
+import { VendorService, Vendor, VendorStatus, TaxIdType, Vendor1099Type } from './vendor-master.js';
+import { BillService, Bill, BillStatus, MatchStatus, ExtractedInvoiceData } from './bill.js';
+import { MatchingEngine, MatchResult, MatchResultStatus, DEFAULT_MATCHING_CONFIG } from './matching-engine.js';
 
 export interface InvoiceProcessorConfig {
-  autoApproveThreshold: number;
-  requireMatchForApproval: boolean;
-  createVendorIfNotFound: boolean;
+  autoApproveThreshold: number;   // bills under this amount auto-approve
+  companyId: string;
+}
+
+export interface ProcessResult {
+  billId: string; vendorId: string; vendorName: string;
+  invoiceNumber: string; totalAmount: number; status: BillStatus;
+  matchResult: MatchResult | null;
+  autoApproved: boolean; notes: string[];
 }
 
 export class InvoiceProcessor {
@@ -30,203 +26,101 @@ export class InvoiceProcessor {
     private vendorService: VendorService,
     private billService: BillService,
     private matchingEngine: MatchingEngine,
-    config?: Partial<InvoiceProcessorConfig>
+    config?: Partial<InvoiceProcessorConfig>,
   ) {
-    this.config = {
-      autoApproveThreshold: config?.autoApproveThreshold ?? 5000,
-      requireMatchForApproval: config?.requireMatchForApproval ?? true,
-      createVendorIfNotFound: config?.createVendorIfNotFound ?? true,
-    };
+    this.config = { autoApproveThreshold: 5000, companyId: 'default', ...config };
+    this.matchingEngine.registerConfig(this.config.companyId, DEFAULT_MATCHING_CONFIG);
   }
 
-  /**
-   * Process an extracted invoice through the complete workflow
-   */
-  async processInvoice(extracted: ExtractedInvoiceData): Promise<InvoiceProcessorResult> {
-    const errors: string[] = [];
+  async processInvoice(extracted: ExtractedInvoiceData): Promise<ProcessResult> {
+    const notes: string[] = [];
+    let vendorId: string;
+    let vendor: Vendor | null = null;
 
-    try {
-      // Step 1: Find or create vendor
-      let vendor = await this.vendorService.findByName(extracted.vendorName);
-      if (!vendor) {
-        if (!this.config.createVendorIfNotFound) {
-          errors.push(`Vendor not found: ${extracted.vendorName}`);
-          return {
-            billId: '',
-            vendorId: '',
-            vendorName: extracted.vendorName,
-            status: 'created',
-            errors
-          };
-        }
-        vendor = await this.vendorService.create({
-          name: extracted.vendorName,
-          status: VendorStatus.ACTIVE,
-          companyId: 'default',
-          taxIdType: TaxIdType.EIN,
-          taxId: '',
-          address: {
-            street: extracted.vendorAddress || '',
-            city: '',
-            state: '',
-            zip: '',
-            country: 'US'
-          },
-          contact: { name: '', email: '', phone: '' },
-          paymentTerms: { type: 'net', days: 30 },
-          1099: {
-            type: Vendor1099Type.NONE,
-            required: false,
-            threshold: 0,
-            ytdAmount: 0,
-            w9OnFile: false
-          },
-        });
-      }
-
-      // Step 2: Create bill from extracted data
-      const bill = await this.billService.createFromExtracted(extracted, vendor.id);
-
-      // Step 3: Attempt matching
-      const matchResult = await this.matchingEngine.attemptMatch(bill);
-
-      // Update match status based on result
-      if (matchResult.status === 'matched' || matchResult.status === 'no_po') {
-        await this.billService.setMatchStatus(bill.id, MatchStatus.MATCHED);
-      } else if (matchResult.status === 'variance') {
-        await this.billService.setMatchStatus(bill.id, MatchStatus.VARIANCE);
-      } else if (matchResult.status === 'exception') {
-        await this.billService.setMatchStatus(bill.id, MatchStatus.EXCEPTION);
-      }
-
-      // Step 4: Determine approval status
-      // Auto-approve small bills that are matched or have no PO
-      const canAutoApprove = bill.totalAmount < this.config.autoApproveThreshold;
-      const matchSuccessful = matchResult.status === 'matched' || matchResult.status === 'no_po';
-
-      if (canAutoApprove && matchSuccessful) {
-        await this.billService.approve(bill.id, bill.totalAmount);
-        
-        // Update 1099 tracking
-        await this.vendorService.update1099Tracking(vendor.id, bill.totalAmount);
-        
-        return {
-          billId: bill.id,
-          vendorId: vendor.id,
-          vendorName: vendor.name,
-          status: 'approved',
-          matchResult
-        };
-      }
-
-      // Bill requires manual review
-      return {
-        billId: bill.id,
-        vendorId: vendor.id,
-        vendorName: vendor.name,
-        status: 'pending_review',
-        matchResult,
-        errors: matchResult.status === 'exception' ? [matchResult.reason || 'Match exception'] : errors
-      };
-
-    } catch (error) {
-      return {
-        billId: '',
-        vendorId: '',
-        vendorName: extracted.vendorName,
-        status: 'created',
-        errors: [...errors, String(error)]
-      };
+    // 1. Find or create vendor
+    const existing = await this.vendorService.findByName(this.config.companyId, extracted.vendorName);
+    if (existing.length === 1) {
+      vendor = existing[0];
+      vendorId = vendor.id;
+      notes.push(`Matched existing vendor: ${vendor.number}`);
+    } else {
+      vendor = await this.vendorService.create({
+        name: extracted.vendorName, status: VendorStatus.ACTIVE, companyId: this.config.companyId,
+        taxIdType: TaxIdType.NONE, taxId: '',
+        address: { street: '', city: '', state: '', zip: '', country: '' },
+        contact: { name: '', email: '', phone: '' },
+        paymentTerms: { type: 'net', days: 30 },
+        1099: { type: Vendor1099Type.NONE, required: false, threshold: 600, ytdAmount: 0, w9OnFile: false },
+        bankAccounts: [],
+      });
+      vendorId = vendor.id;
+      notes.push(`Created new vendor: ${vendor.number}`);
     }
-  }
 
-  /**
-   * Process multiple invoices in batch
-   */
-  async processBatch(extractedInvoices: ExtractedInvoiceData[]): Promise<InvoiceProcessorResult[]> {
-    const results: InvoiceProcessorResult[] = [];
-    for (const extracted of extractedInvoices) {
-      const result = await this.processInvoice(extracted);
-      results.push(result);
+    // 2. Create bill
+    const bill = await this.billService.create({
+      vendorId, vendorName: extracted.vendorName, companyId: this.config.companyId,
+      invoiceNumber: extracted.invoiceNumber,
+      invoiceDate: extracted.invoiceDate, dueDate: extracted.dueDate,
+      lineItems: extracted.lineItems,
+      subtotal: extracted.subtotal, taxAmount: extracted.taxAmount,
+      totalAmount: extracted.totalAmount, currency: extracted.currency,
+      status: BillStatus.RECEIVED, matchStatus: MatchStatus.PENDING,
+    });
+    notes.push(`Bill created: ${bill.id}`);
+
+    // 3. Attempt matching
+    const matchResult = this.matchingEngine.matchInvoiceToPO({
+      companyId: this.config.companyId, invoiceId: bill.id,
+      invoiceTotal: extracted.totalAmount, invoiceLines: extracted.lineItems,
+    });
+
+    // Update bill match status
+    await this.billService.update(bill.id, { matchStatus: matchResult.status === MatchResultStatus.EXCEPTION ? MatchStatus.EXCEPTION : matchResult.status === MatchResultStatus.MATCHED_3WAY ? MatchStatus.MATCHED_3WAY : matchResult.status === MatchResultStatus.MATCHED_2WAY ? MatchStatus.MATCHED_2WAY : matchResult.status === MatchResultStatus.NO_PO ? MatchStatus.NO_PO : MatchStatus.PENDING });
+
+    if (matchResult.status === MatchResultStatus.EXCEPTION) {
+      notes.push(`Match exception: ${matchResult.varianceReason}`);
     }
-    return results;
-  }
 
-  /**
-   * Get processing statistics for a batch
-   */
-  summarizeResults(results: InvoiceProcessorResult[]): {
-    total: number;
-    created: number;
-    matched: number;
-    approved: number;
-    pendingReview: number;
-    errors: number;
-  } {
+    // 4. Determine approval
+    let status: BillStatus;
+    let autoApproved = false;
+
+    if (extracted.totalAmount < this.config.autoApproveThreshold) {
+      status = BillStatus.APPROVED;
+      autoApproved = true;
+      notes.push(`Auto-approved (under ${this.config.autoApproveThreshold})`);
+    } else {
+      status = BillStatus.RECEIVED;
+      notes.push(`Pending review (over ${this.config.autoApproveThreshold})`);
+    }
+
+    await this.billService.update(bill.id, { status });
+
+    // 5. Update 1099 tracking
+    if (vendor && vendor.ytdAmount !== undefined) {
+      await this.vendorService.update(vendorId, {
+        ytdAmount: (vendor.ytdAmount || 0) + extracted.totalAmount,
+      } as any);
+    }
+
     return {
-      total: results.length,
-      created: results.filter(r => r.status === 'created').length,
-      matched: results.filter(r => r.status === 'matched').length,
-      approved: results.filter(r => r.status === 'approved').length,
-      pendingReview: results.filter(r => r.status === 'pending_review').length,
-      errors: results.filter(r => r.errors && r.errors.length > 0).length
+      billId: bill.id, vendorId, vendorName: extracted.vendorName,
+      invoiceNumber: extracted.invoiceNumber, totalAmount: extracted.totalAmount,
+      status, matchResult, autoApproved, notes,
     };
   }
 
-  /**
-   * Update configuration
-   */
-  updateConfig(config: Partial<InvoiceProcessorConfig>): void {
-    this.config = { ...this.config, ...config };
-  }
+  async processOutstandingBills(): Promise<{ processed: number; approved: number; exceptions: number }> {
+    const bills = await this.billService.list(this.config.companyId);
+    const outstanding = bills.filter(b => b.status === BillStatus.RECEIVED || b.status === BillStatus.APPROVED);
+    let approved = 0, exceptions = 0;
 
-  /**
-   * Get current configuration
-   */
-  getConfig(): InvoiceProcessorConfig {
-    return { ...this.config };
-  }
-
-  /**
-   * Check if a vendor requires W-9 before processing
-   */
-  async checkW9Requirement(vendorId: string): Promise<{
-    required: boolean;
-    w9OnFile: boolean;
-    canProcess: boolean
-  }> {
-    const vendor = await this.vendorService.getById(vendorId);
-    if (!vendor) {
-      return { required: false, w9OnFile: false, canProcess: false };
+    for (const bill of outstanding) {
+      if (bill.status === BillStatus.APPROVED) approved++;
+      else exceptions++;
     }
-    
-    const requiresW9 = vendor['1099'].required;
-    const w9OnFile = vendor['1099'].w9OnFile;
-    
-    return {
-      required: requiresW9,
-      w9OnFile,
-      canProcess: !requiresW9 || w9OnFile
-    };
-  }
 
-  /**
-   * Get bills that need 1099 review
-   */
-  async getBillsRequiring1099Review(): Promise<string[]> {
-    const vendors = await this.vendorService.getVendorsRequiring1099();
-    const billIds: string[] = [];
-    
-    for (const vendor of vendors) {
-      if (!vendor['1099'].w9OnFile) {
-        const thresholdMet = await this.vendorService.check1099Threshold(vendor.id);
-        if (thresholdMet) {
-          const bills = await this.billService.getOutstanding(vendor.id);
-          billIds.push(...bills.map(b => b.id));
-        }
-      }
-    }
-    
-    return billIds;
+    return { processed: outstanding.length, approved, exceptions };
   }
 }

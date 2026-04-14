@@ -1,60 +1,114 @@
 /**
- * Sales Tax — Jurisdiction rates, nexus tracking, tax calculation
+ * Sales Tax — Uses CompanyConfig for jurisdiction rates and nexus tracking.
+ * No hardcoded states — all loaded from company configuration.
  */
 
-export interface TaxRate { jurisdictionId: string; jurisdictionName: string; rate: number; type: 'state' | 'county' | 'city' | 'district'; }
-export interface TaxRegistration { companyId: string; jurisdictionId: string; jurisdictionName: string; state: string; type: 'sales' | 'sellers_use' | 'cottage'; registrationNumber?: string; effectiveDate: Date; status: 'active' | 'cancelled'; }
-export interface TransactionTax { transactionId: string; shippingState?: string; taxableAmount: number; taxRate: number; taxAmount: number; jurisdictionName: string; exempt: boolean; }
+import { CompanyConfigService } from '../core/company-config.js';
+
+export interface TransactionTax {
+  transactionId: string;
+  jurisdictionId: string; jurisdictionName: string;
+  taxTypes: { type: string; rate: number; amount: number; }[];
+  totalTaxAmount: number; taxableAmount: number;
+  exempt: boolean; exemptReason?: string;
+}
+
+export interface SalesTaxConfig {
+  defaultTaxRate: number;
+  shippingTaxable: boolean;
+  exemptCategories: string[];
+  compoundTax: boolean;  // tax on tax (some jurisdictions)
+}
 
 export class SalesTaxService {
-  private jurisdictionRates = new Map<string, TaxRate>();
-  private registrations = new Map<string, TaxRegistration>();
-  private nexusJurisdictions = new Set<string>();
+  private companyConfig: CompanyConfigService;
+  private nexusRegistrations = new Map<string, { companyId: string; jurisdictionId: string; registrationNumber?: string; effectiveDate: Date; status: 'active' | 'cancelled'; }>();
 
-  constructor() {
-    // Seed common state rates
-    const rates: [string, number, string][] = [
-      ['CA', 0.0725, 'California'], ['NY', 0.08, 'New York'], ['TX', 0.0625, 'Texas'],
-      ['FL', 0.06, 'Florida'], ['WA', 0.065, 'Washington'], ['IL', 0.0625, 'Illinois'],
-      ['PA', 0.06, 'Pennsylvania'], ['OH', 0.0575, 'Ohio'], ['GA', 0.04, 'Georgia'],
-      ['NC', 0.0475, 'North Carolina'], ['MI', 0.06, 'Michigan'], ['NJ', 0.06625, 'New Jersey'],
-      ['VA', 0.053, 'Virginia'], ['AZ', 0.056, 'Arizona'], ['MA', 0.0625, 'Massachusetts'],
-    ];
-    for (const [id, rate, name] of rates) {
-      this.jurisdictionRates.set(id, { jurisdictionId: id, jurisdictionName: name, rate, type: 'state' });
+  constructor(companyConfig: CompanyConfigService) {
+    this.companyConfig = companyConfig;
+  }
+
+  /** Register nexus in a jurisdiction — reads effective tax rate from CompanyConfig */
+  async registerNexus(companyId: string, jurisdictionId: string, registrationNumber?: string): Promise<void> {
+    const j = await this.companyConfig.getJurisdiction(companyId, jurisdictionId);
+    if (!j) throw new Error(`Jurisdiction ${jurisdictionId} not found for company ${companyId}`);
+    this.nexusRegistrations.set(`${companyId}_${jurisdictionId}`, {
+      companyId, jurisdictionId, registrationNumber,
+      effectiveDate: j.effectiveFrom, status: 'active',
+    });
+  }
+
+  /** Check if company has nexus in a jurisdiction */
+  async hasNexus(companyId: string, jurisdictionId: string): Promise<boolean> {
+    const reg = this.nexusRegistrations.get(`${companyId}_${jurisdictionId}`);
+    return reg?.status === 'active';
+  }
+
+  /** Calculate tax — reads rate dynamically from CompanyConfig jurisdiction */
+  async calculateTax(params: {
+    transactionId: string; companyId: string;
+    amount: number;
+    jurisdictionId: string;
+    productCategory?: string;
+    customerExempt?: boolean;
+    customerExemptionCertificateId?: string;
+  }): Promise<TransactionTax> {
+    // Check exemption
+    if (params.customerExempt) {
+      return {
+        transactionId: params.transactionId, jurisdictionId: params.jurisdictionId,
+        jurisdictionName: '', taxTypes: [], totalTaxAmount: 0,
+        taxableAmount: 0, exempt: true,
+        exemptReason: `Certificate: ${params.customerExemptionCertificateId || 'on file'}`,
+      };
     }
-  }
 
-  async registerNexus(jurisdictionId: string, companyId: string, registrationNumber?: string): Promise<void> {
-    this.nexusJurisdictions.add(jurisdictionId);
-    const rate = this.jurisdictionRates.get(jurisdictionId);
-    if (rate) {
-      this.registrations.set(`${companyId}_${jurisdictionId}`, {
-        companyId, jurisdictionId, jurisdictionName: rate.jurisdictionName, state: jurisdictionId,
-        type: 'sales', registrationNumber, effectiveDate: new Date(), status: 'active',
-      });
+    // Check nexus
+    const hasNexus = await this.hasNexus(params.companyId, params.jurisdictionId);
+    if (!hasNexus) {
+      return {
+        transactionId: params.transactionId, jurisdictionId: params.jurisdictionId,
+        jurisdictionName: 'No nexus', taxTypes: [], totalTaxAmount: 0,
+        taxableAmount: params.amount, exempt: false,
+        exemptReason: 'No nexus in jurisdiction',
+      };
     }
+
+    // Get jurisdiction from CompanyConfig
+    const j = await this.companyConfig.getJurisdiction(params.companyId, params.jurisdictionId);
+    if (!j) {
+      return {
+        transactionId: params.transactionId, jurisdictionId: params.jurisdictionId,
+        jurisdictionName: 'Unknown', taxTypes: [], totalTaxAmount: 0,
+        taxableAmount: params.amount, exempt: false,
+        exemptReason: 'Unknown jurisdiction',
+      };
+    }
+
+    // Get applicable tax rates from jurisdiction config
+    const applicableRates = j.taxRates.filter(t =>
+      ['sales', 'sales_tax', 'vat', 'gst'].includes(t.type.toLowerCase())
+    );
+
+    const taxTypes = applicableRates.map(t => ({
+      type: t.type, rate: t.rate, amount: Math.round(params.amount * t.rate * 100) / 100,
+    }));
+
+    const totalTaxAmount = taxTypes.reduce((s, t) => s + t.amount, 0);
+
+    return {
+      transactionId: params.transactionId,
+      jurisdictionId: params.jurisdictionId,
+      jurisdictionName: j.name,
+      taxTypes, totalTaxAmount, taxableAmount: params.amount,
+      exempt: false,
+    };
   }
 
-  async calculateTax(params: { transactionId: string; amount: number; shippingState?: string; exempt?: boolean; }): Promise<TransactionTax> {
-    if (params.exempt) return { transactionId: params.transactionId, taxableAmount: 0, taxRate: 0, taxAmount: 0, jurisdictionName: 'Exempt', exempt: true };
-    const state = params.shippingState || 'CA';
-    if (!this.nexusJurisdictions.has(state)) return { transactionId: params.transactionId, shippingState: state, taxableAmount: params.amount, taxRate: 0, taxAmount: 0, jurisdictionName: 'No nexus in ' + state, exempt: false };
-    const rate = this.jurisdictionRates.get(state);
-    if (!rate) return { transactionId: params.transactionId, shippingState: state, taxableAmount: params.amount, taxRate: 0, taxAmount: 0, jurisdictionName: 'Unknown', exempt: false };
-    const taxAmount = Math.round(params.amount * rate.rate * 100) / 100;
-    return { transactionId: params.transactionId, shippingState: state, taxableAmount: params.amount, taxRate: rate.rate, taxAmount, jurisdictionName: rate.jurisdictionName, exempt: false };
-  }
-
-  async getNexusStates(companyId: string): Promise<TaxRegistration[]> {
-    return Array.from(this.registrations.values()).filter(r => r.companyId === companyId && r.status === 'active');
-  }
-
-  async addJurisdictionRate(rate: TaxRate): Promise<void> {
-    this.jurisdictionRates.set(rate.jurisdictionId, rate);
-  }
-
-  async getRate(jurisdictionId: string): Promise<TaxRate | undefined> {
-    return this.jurisdictionRates.get(jurisdictionId);
+  /** List all nexus registrations for a company */
+  async getNexusStates(companyId: string): Promise<{ jurisdictionId: string; registrationNumber?: string; }[]> {
+    return Array.from(this.nexusRegistrations.values())
+      .filter(r => r.companyId === companyId && r.status === 'active')
+      .map(r => ({ jurisdictionId: r.jurisdictionId, registrationNumber: r.registrationNumber }));
   }
 }

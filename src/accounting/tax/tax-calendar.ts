@@ -1,72 +1,124 @@
 /**
- * Tax Calendar — Filing deadlines and reminders
+ * Tax Calendar — Generates filing deadlines from CompanyConfig jurisdictions.
+ * No hardcoded IRS/US — reads from company jurisdiction configuration.
  */
 
-export enum TaxFilingType { FEDERAL_INCOME = 'federal_income', STATE_INCOME = 'state_income', SALES_TAX = 'sales_tax', PAYROLL_TAX = 'payroll_tax', PROPERTY_TAX = 'property_tax', ESTIMATED_TAX = 'estimated_tax' }
-export enum FilingFrequency { MONTHLY = 'monthly', QUARTERLY = 'quarterly', ANNUALLY = 'annually' }
-export enum FilingStatus { UPCOMING = 'upcoming', DUE_SOON = 'due_soon', OVERDUE = 'overdue', FILED = 'filed' }
+import { CompanyConfigService } from '../core/company-config.js';
+import { CompanyStructure, JurisdictionConfig } from '../core/company-config.js';
+
+export type TaxFilingType = string;   // flexible: 'corporate_income', 'vat', 'sales_tax', 'payroll', etc.
+export type FilingFrequency = 'monthly' | 'quarterly' | 'annually' | 'semi_annually';
+export type FilingStatus = 'upcoming' | 'due_soon' | 'overdue' | 'filed' | 'extended';
 
 export interface TaxDeadline {
-  id: string; type: TaxFilingType; jurisdiction: string;
-  periodDescription: string; dueDate: Date; filingStatus: FilingStatus;
-  filingFrequency: FilingFrequency; amountDue?: number; taxPaid?: number; notes?: string;
+  id: string; companyId: string;
+  taxFilingType: TaxFilingType;
+  jurisdictionId: string; jurisdictionName: string;
+  periodDescription: string;
+  dueDate: Date; filingStatus: FilingStatus;
+  filingFrequency: FilingFrequency;
+  amountDue?: number; taxPaid?: number; filingForm?: string;
+  notes?: string;
 }
 
 export class TaxCalendarService {
   private deadlines: TaxDeadline[] = [];
+  private companyConfig: CompanyConfigService;
   private idCounter = 0;
   private nextId(): string { return `tdl_${Date.now()}_${++this.idCounter}`; }
 
+  constructor(companyConfig: CompanyConfigService) {
+    this.companyConfig = companyConfig;
+  }
+
   private getStatus(dueDate: Date): FilingStatus {
     const daysUntilDue = Math.floor((dueDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-    if (daysUntilDue < 0) return 'overdue' as FilingStatus;
-    if (daysUntilDue <= 7) return 'due_soon' as FilingStatus;
-    return 'upcoming' as FilingStatus;
+    if (daysUntilDue < 0) return 'overdue';
+    if (daysUntilDue <= 7) return 'due_soon';
+    return 'upcoming';
   }
 
-  async addDeadline(params: Omit<TaxDeadline, 'id' | 'filingStatus'>): Promise<TaxDeadline> {
-    const deadline: TaxDeadline = { ...params, id: this.nextId(), filingStatus: this.getStatus(params.dueDate) };
-    this.deadlines.push(deadline);
-    return deadline;
-  }
+  /** Generate calendar for a company for a given year — reads from CompanyConfig */
+  async generateAnnualCalendar(companyId: string, year: number): Promise<TaxDeadline[]> {
+    const company = await this.companyConfig.get(companyId);
+    if (!company) throw new Error(`Company ${companyId} not found`);
 
-  async generateAnnualCalendar(year: number): Promise<TaxDeadline[]> {
     const calendar: TaxDeadline[] = [];
-    const add = (type: string, jurisdiction: string, periodDesc: string, dueDate: Date, freq: string) => {
-      calendar.push({ id: this.nextId(), type: type as TaxFilingType, jurisdiction, periodDescription: periodDesc, dueDate, filingStatus: this.getStatus(dueDate), filingFrequency: freq as FilingFrequency });
-    };
-    // Federal estimated taxes: Apr 15, Jun 15, Sep 15, Jan 15
-    for (const item of [[4,'Q1'],[6,'Q2'],[9,'Q3'],[1,'Q4']] as [number, string][]) {
-      const m = item[0];
-      const p = item[1];
-      const mo: number = m === 1 ? 12 : m;
-      const yr: number = m === 1 ? year - 1 : year;
-      add('estimated_tax', 'IRS', `${p} ${yr}`, new Date(yr, mo - 1, 15), 'quarterly');
+    const fyStart = company.accountingPolicy.fiscalYearStartMonth;
+
+    for (const j of company.jurisdictions) {
+      if (j.effectiveTo && j.effectiveTo < new Date(year, 0, 1)) continue;
+
+      for (const filing of j.filingFrequencies) {
+        const deadlines = this.generateDeadlines(companyId, j, filing, year, fyStart);
+        calendar.push(...deadlines);
+      }
     }
-    // Monthly sales tax — CA example
-    for (let m = 0; m < 12; m++) {
-      const dt = new Date(year, m + 1, 1);
-      add('sales_tax', 'CA', `${dt.toLocaleString('default', {month:'long'})} ${year} Sales Tax`, new Date(year, m + 1, 30), 'monthly');
-    }
-    // Annual federal income tax
-    add('federal_income', 'IRS', `Tax Year ${year}`, new Date(year + 1, 3, 15), 'annually');
-    // Remove old deadlines for this year and add new ones
-    this.deadlines = this.deadlines.filter(d => d.dueDate.getFullYear() !== year);
+
+    this.deadlines = this.deadlines.filter(d => {
+      const dYear = d.dueDate.getFullYear();
+      return !(dYear === year && d.companyId === companyId);
+    });
     this.deadlines.push(...calendar);
     return calendar;
   }
 
-  async getUpcoming(days: number = 30): Promise<TaxDeadline[]> {
+  private generateDeadlines(
+    companyId: string, j: JurisdictionConfig,
+    filing: { taxType: string; frequency: FilingFrequency },
+    year: number, fyStart: number
+  ): TaxDeadline[] {
+    const deadlines: TaxDeadline[] = [];
+    const add = (periodDesc: string, dueDate: Date, form?: string) => {
+      deadlines.push({
+        id: this.nextId(), companyId, taxFilingType: filing.taxType,
+        jurisdictionId: j.id, jurisdictionName: j.name,
+        periodDescription: periodDesc, dueDate,
+        filingStatus: this.getStatus(dueDate),
+        filingFrequency: filing.frequency, filingForm: form,
+      });
+    };
+
+    const freq = filing.frequency;
+    if (freq === 'monthly') {
+      for (let m = 0; m < 12; m++) {
+        const dt = new Date(year, m, 1);
+        add(`${dt.toLocaleString('default', { month: 'long' })} ${year}`, new Date(year, m + 1, 20));
+      }
+    } else if (freq === 'quarterly') {
+      // Standard quarterly: Q1=Apr 15, Q2=Jun 15, Q3=Sep 15, Q4=Jan 15
+      const quarters: [number, string][] = [[3, 'Q1'], [5, 'Q2'], [8, 'Q3'], [0, 'Q4']];
+      for (const [month, label] of quarters) {
+        add(`${label} ${year}`, new Date(month === 0 ? year + 1 : year, month, 15));
+      }
+    } else if (freq === 'annually') {
+      // Annual filing — typically 3 months after fiscal year end
+      const fiscalEndMonth = fyStart === 1 ? 11 : fyStart - 2;
+      add(`Tax Year ${year}`, new Date(year, fiscalEndMonth + 3, 15));
+    }
+
+    return deadlines;
+  }
+
+  async addDeadline(deadline: Omit<TaxDeadline, 'id' | 'filingStatus'>): Promise<TaxDeadline> {
+    const d: TaxDeadline = { ...deadline, id: this.nextId(), filingStatus: this.getStatus(deadline.dueDate) };
+    this.deadlines.push(d);
+    return d;
+  }
+
+  async getUpcoming(companyId: string, days: number = 30): Promise<TaxDeadline[]> {
     const cutoff = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
-    return this.deadlines.filter(d => d.dueDate <= cutoff && d.filingStatus !== 'filed').sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
+    return this.deadlines
+      .filter(d => d.companyId === companyId && d.dueDate <= cutoff && d.filingStatus !== 'filed')
+      .sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
   }
 
   async markFiled(deadlineId: string, amountPaid: number): Promise<void> {
     const d = this.deadlines.find(dl => dl.id === deadlineId);
-    if (d) { d.taxPaid = amountPaid; d.filingStatus = 'filed' as FilingStatus; }
+    if (d) { d.taxPaid = amountPaid; d.filingStatus = 'filed'; }
   }
 
-  async getOverdue(): Promise<TaxDeadline[]> {
-    return this.deadlines.filter(d => d.filingStatus === 'overdue');
+  async getOverdue(companyId: string): Promise<TaxDeadline[]> {
+    return this.deadlines.filter(d => d.companyId === companyId && d.filingStatus === 'overdue');
   }
 }

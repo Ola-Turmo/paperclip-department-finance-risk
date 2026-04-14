@@ -1,7 +1,12 @@
-/**
- * Accounting Module
- * Phase 1: General Ledger (GL)
- */
-
-// Re-export all GL modules
+export * from './core/interfaces.js';
+export * from './core/db-factory.js';
+export * from './core/company-config.js';
+export * from './core/chart-of-accounts-config.js';
 export * from './gl/index.js';
+export * from './ap/index.js';
+export * from './ar/index.js';
+export * from './cash/index.js';
+export * from './fa/index.js';
+export * from './tax/index.js';
+export * from './payroll/index.js';
+export * from './reporting/index.js';

@@ -104,6 +104,30 @@ Live metrics pulled from the Financial Data Warehouse:
 | EBITDA | $2.1M | vs Budget: +8% |
 | AR Collection Rate | 98% | SLA: 95% |
 
+### Pivot Engine
+
+![Pivot Engine](docs/images/05-pivot-engine.jpg)
+
+Excel-style analytics on any dimensional field:
+
+- **Row dimensions** — group by any field: `accountType`, `entityKey`, `fiscalPeriod`, `costCenter`, `customerKey`, `vendorKey`, `productKey`, and computed fields (`fiscalYear`, `fiscalQuarter`, `calendarMonth`, etc.)
+- **Column dimensions** — pivot any dimension into column headers for cross-tab analysis
+- **Value aggregations** — SUM, COUNT, AVG, MIN, MAX with optional aliases
+- **Filters** — pre-aggregation filtering: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `nin`, `contains`
+- **Totals** — subtotals at each dimension level, grand totals toggle
+- **Zero exclusion** — hide zero-value rows for cleaner output
+
+```typescript
+const result = pivot.execute({
+  rowDimensions: ['fiscalPeriod', 'accountType'],
+  columnDimensions: ['entityKey'],
+  values: [{ field: 'amount', agg: 'SUM', alias: 'Total' }],
+  filters: [{ field: 'entityKey', operator: 'neq', value: 'INTERCOMPANY' }],
+  totals: 'subtotals',
+  grandTotal: true,
+});
+```
+
 ### Report Engine
 
 Declarative report definitions — no hardcoded logic:
@@ -124,6 +148,16 @@ const xbrl  = reportService.exportReport(report, 'xbrl');
 
 Adding a new report = new `ReportDefinition` config object, not new code.
 
+### Build Status
+
+![Build Status](docs/images/06-build-status.jpg)
+
+| Check | Result |
+|-------|--------|
+| TypeScript | 0 errors (`npm run check`) |
+| Tests | 185 tests passing across 16 test files |
+| Test suites | Anomaly detection, warehouse, report engine, statutory reports, consolidation, budget vs actual, audit reports, GL, AP, payroll, and more |
+
 ---
 
 ## Quick Start
@@ -133,7 +167,7 @@ npm install
 npm run dev
 npm run build
 npm run check   # TypeScript — 0 errors required
-npm run test    # All tests passing
+npm run test    # All 185 tests passing
 ```
 
 ## Metrics
@@ -160,7 +194,7 @@ GL Entries
   → Financial Data Warehouse (FactBalance pre-aggregated)
   → Report Engine (declarative definitions)
   → JSON / XBRL / CSV output
-  → Management | Statutory | Consolidation | BudgetVsActual | Audit
+  → Management | Statutory | Consolidation | BudgetVsActual | Audit | Pivot
 ```
 
 ## Tech Stack

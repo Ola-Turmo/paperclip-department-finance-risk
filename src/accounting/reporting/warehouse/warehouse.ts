@@ -187,7 +187,7 @@ export class FinancialDataWarehouse {
     currency?: string;
   }): Promise<AccountPeriodBalance[]> {
     const results: AccountPeriodBalance[] = [];
-    for (const [key, bal] of this.periodBalances) {
+    for (const [key, bal] of Array.from(this.periodBalances.entries())) {
       if (bal.dateKey !== params.dateKey) continue;
       if (params.entityKey && bal.entityKey !== params.entityKey) continue;
       if (params.accountKeys && !params.accountKeys.includes(bal.accountKey)) continue;

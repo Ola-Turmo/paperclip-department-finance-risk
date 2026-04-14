@@ -25,6 +25,68 @@ export interface DbConfig {
   database?: string;
 }
 
+/** Budget entry — a single budget line for an account in a period. */
+export interface BudgetEntry {
+  id: string;
+  accountKey: string;
+  accountCode: string;
+  accountName: string;
+  periodKey: string;       // "2025-03" or "2025-Q1"
+  budgetAmount: string;
+  forecastAmount?: string;  // Optional updated forecast
+}
+
+/**
+ * Repository for budget entries.
+ * Pluggable: use InMemoryBudgetEntryRepo for dev/test,
+ * swap for PostgresBudgetEntryRepo, SqliteBudgetEntryRepo, etc. for production.
+ */
+export interface BudgetEntryRepository {
+  findByPeriod(periodKey: string): Promise<BudgetEntry[]>;
+  findByAccountAndPeriod(accountKey: string, periodKey: string): Promise<BudgetEntry | null>;
+  save(entry: BudgetEntry): Promise<BudgetEntry>;
+  saveMany(entries: BudgetEntry[]): Promise<BudgetEntry[]>;
+  delete(id: string): Promise<void>;
+  deleteByPeriod(periodKey: string): Promise<void>;
+  count(filters?: Partial<BudgetEntry>): Promise<number>;
+}
+
+export class InMemoryBudgetEntryRepo implements BudgetEntryRepository {
+  private storage = new Map<string, BudgetEntry>();
+
+  async findByPeriod(periodKey: string): Promise<BudgetEntry[]> {
+    return Array.from(this.storage.values()).filter(e => e.periodKey === periodKey);
+  }
+
+  async findByAccountAndPeriod(accountKey: string, periodKey: string): Promise<BudgetEntry | null> {
+    return Array.from(this.storage.values()).find(
+      e => e.accountKey === accountKey && e.periodKey === periodKey,
+    ) ?? null;
+  }
+
+  async save(entry: BudgetEntry): Promise<BudgetEntry> {
+    this.storage.set(entry.id, entry);
+    return entry;
+  }
+
+  async saveMany(entries: BudgetEntry[]): Promise<BudgetEntry[]> {
+    for (const e of entries) this.storage.set(e.id, e);
+    return entries;
+  }
+
+  async delete(id: string): Promise<void> { this.storage.delete(id); }
+
+  async deleteByPeriod(periodKey: string): Promise<void> {
+    for (const [id, e] of Array.from(this.storage.entries())) {
+      if (e.periodKey === periodKey) this.storage.delete(id);
+    }
+  }
+
+  async count(filters?: Partial<BudgetEntry>): Promise<number> {
+    return (await this.findByPeriod(filters?.periodKey ?? '')).length;
+  }
+}
+
 export class RepositoryFactory {
   private repos = new Map<string, Repository<any>>();
   private unitOfWork: UnitOfWork | null = null;

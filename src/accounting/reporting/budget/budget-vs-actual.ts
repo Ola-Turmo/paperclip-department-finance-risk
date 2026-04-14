@@ -12,8 +12,11 @@
 import { FinancialDataWarehouse } from '../warehouse/warehouse.js';
 import { DimAccountService } from '../dimensional/dim-services.js';
 import { DimTimeService } from '../dimensional/dim-services.js';
+import { BudgetEntry, BudgetEntryRepository } from '../../core/interfaces.js';
+import { InMemoryBudgetEntryRepo } from '../../core/interfaces.js';
 
 export interface BudgetLine {
+  id?: string;             // Optional — generated if not provided
   accountKey: string;
   accountCode: string;
   accountName: string;
@@ -65,28 +68,31 @@ export interface KPIScorecard {
 }
 
 export class BudgetVsActualEngine {
-  private budgetRepository = new Map<string, BudgetLine[]>();
-
   constructor(
     private warehouse: FinancialDataWarehouse,
     private dimAccount: DimAccountService,
     private dimTime: DimTimeService,
+    private budgetRepo: BudgetEntryRepository = new InMemoryBudgetEntryRepo(),
   ) {}
 
-  /** Load budget data from an array — typically from a spreadsheet import */
+  /** Load budget data from an array — typically from a spreadsheet import.
+   *  Persists via the injected BudgetEntryRepository. */
   async loadBudget(budgetLines: BudgetLine[]): Promise<void> {
-    for (const line of budgetLines) {
-      const key = line.periodKey;
-      if (!this.budgetRepository.has(key)) {
-        this.budgetRepository.set(key, []);
-      }
-      this.budgetRepository.get(key)!.push(line);
-    }
+    const entries: BudgetEntry[] = budgetLines.map(line => ({
+      id: line.id ?? `${line.periodKey}:${line.accountKey}`,
+      accountKey: line.accountKey,
+      accountCode: line.accountCode,
+      accountName: line.accountName,
+      periodKey: line.periodKey,
+      budgetAmount: line.budgetAmount,
+      forecastAmount: line.forecastAmount,
+    }));
+    await this.budgetRepo.saveMany(entries);
   }
 
-  /** Clear budget data for a period */
-  clearBudget(periodKey: string): void {
-    this.budgetRepository.delete(periodKey);
+  /** Clear budget data for a period via the repository. */
+  async clearBudget(periodKey: string): Promise<void> {
+    await this.budgetRepo.deleteByPeriod(periodKey);
   }
 
   /**
@@ -100,7 +106,7 @@ export class BudgetVsActualEngine {
   }): Promise<VarianceAnalysis[]> {
     const { dateKey, entityKey, materialityThreshold = 0.05 } = params;
     const periodKey = dateKey.substring(0, 7);  // "2025-03"
-    const budgetLines = this.budgetRepository.get(periodKey) ?? [];
+    const budgetLines = await this.budgetRepo.findByPeriod(periodKey);
     const actualBalances = await this.warehouse.getTrialBalanceData({ entityKey, dateKey, includeZeroBalance: false });
     const priorDateKey = this.getPriorPeriodDateKey(dateKey);
     const priorBalances = await this.warehouse.getTrialBalanceData({ entityKey, dateKey: priorDateKey, includeZeroBalance: false });

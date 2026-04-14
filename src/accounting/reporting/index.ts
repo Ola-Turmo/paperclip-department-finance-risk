@@ -14,8 +14,10 @@
 export * from './dimensional/index.js';
 export * from './warehouse/index.js';
 export * from './engine/index.js';
+export * from './pivot.js';
 export { StatutoryReportService } from './statutory/statutory-reports.js';
 export { ConsolidationEngine, EliminationEntry, NCICalculation, CurrencyTranslationResult } from './consolidation/consolidation-engine.js';
-export { BudgetVsActualEngine, BudgetLine, VarianceAnalysis, KPIScorecard } from './budget/budget-vs-actual.js';
+export { BudgetVsActualEngine } from './budget/index.js';
+export type { BudgetLine, VarianceAnalysis, KPIScorecard } from './budget/index.js';
 export { AuditReportService, AuditEntry, UserActivitySummary, SODViolation } from './audit/audit-report-service.js';
 export { FinancialReportService, ReportResult, ReportDefinition, ReportRow, ReportSection } from './engine/report-engine.js';

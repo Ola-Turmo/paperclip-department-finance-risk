@@ -87,10 +87,10 @@ export class AuditReportService {
   /**
    * Log an audit event. Called by the OLTP system on every financial transaction.
    */
-  logEvent(event: Omit<AuditEntry, 'auditId' | 'hash' | 'priorHash' | 'sequenceNumber'>): void {
+  async logEvent(event: Omit<AuditEntry, 'auditId' | 'hash' | 'priorHash' | 'sequenceNumber'>): Promise<void> {
     const auditId = crypto.randomUUID();
     const lastHash = this.auditLog[this.auditLog.length - 1]?.hash ?? 'GENESIS';
-    const hash = this.computeHash({ ...event, auditId, priorHash: lastHash, sequenceNumber: this.sequenceCounter });
+    const hash = await this.computeHash({ ...event, auditId, priorHash: lastHash, sequenceNumber: this.sequenceCounter });
     
     const entry: AuditEntry = {
       ...event,
@@ -102,17 +102,13 @@ export class AuditReportService {
     this.auditLog.push(entry);
   }
 
-  private computeHash(data: Record<string, unknown>): string {
-    // In production, use crypto.subtle.digest('SHA-256', ...)
-    // Simplified for TypeScript without crypto dependency
+  private async computeHash(data: Record<string, unknown>): Promise<string> {
+    // SHA-256 via Web Crypto API (available in Node.js 18+)
     const str = JSON.stringify(data, Object.keys(data).sort());
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const chr = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + chr;
-      hash |= 0;
-    }
-    return Math.abs(hash).toString(16).padStart(16, '0');
+    const encoded = new TextEncoder().encode(str);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
   /**
@@ -224,7 +220,7 @@ export class AuditReportService {
     ];
 
     const violations: SODViolation[] = [];
-    for (const [userId, roles] of userRoles) {
+    for (const [userId, roles] of Array.from(userRoles.entries())) {
       for (const [conflictPair, desc] of conflicts) {
         const hasBoth = conflictPair.every(r => roles.includes(r));
         if (hasBoth) {
